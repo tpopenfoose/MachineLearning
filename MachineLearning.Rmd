@@ -1,0 +1,194 @@
+---
+title: "Machine Learning Project"
+author: "by Toby Popenfoose"
+date: "July 22, 2015"
+output:
+  pdf_document:
+    fig_height: 7.5
+    fig_width: 7.5
+  html_document: default
+graphics: yes
+geometry: margin=.5in
+fontsize: 11pt
+---
+## Introduction
+This project used the data from http://groupware.les.inf.puc-rio.br/har to develop a predictive model to predict the "classe" from weight lifting data sets in Human Activity Recognition (HAR).
+
+### Executive Summary
+I used 5 different types of classification models to evaluate the accuracy of predicting the correct "classe".  The C5.0 model had the highest accuracy and the lowest Out Of Sample Error (OOSE) rate.  It had an OOSE of 0.8%.
+
+### Load the Required R Packages
+
+```{r}
+library(caret)
+
+```
+
+### Get the Data
+
+```{r}
+dfTrain <- "./data/pml-training.csv"
+dfTest  <- "./data/pml-testing.csv"
+
+if (!file.exists("./data")) {
+  dir.create("./data")
+}
+
+if (!file.exists(dfTrain)) {
+  download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv",
+                destfile=dfTrain, method="curl")
+}
+
+if (!file.exists(dfTest)) {
+  download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv",
+                destfile=dfTest, method="curl")
+}
+```
+
+## Load the Data
+
+```{r}
+dfTrainRaw <- read.csv(dfTrain)
+dim(dfTrainRaw)
+
+dfTestRaw <- read.csv(dfTest)
+dim(dfTestRaw)
+```
+
+### Clean the Data
+
+First get rid of the "X" id, windows and timestamp columns.
+```{r}
+dfTrainRaw <- dfTrainRaw[ , -(1:7)] # get rid of X id, windows and timestamps columns
+```
+
+Now, get rid of the columns with over half the values are missing.
+```{r}
+dfTrainRaw <- dfTrainRaw[, colSums(is.na(dfTrainRaw)) <= nrow(dfTrainRaw) / 2]  
+    # get rid of columns with over half values missing
+```
+
+Now remove the remaining factor columns since the majority of their rows are empty.
+```{r}
+                                        # now remove factor columns
+# from http://www.markhneedham.com/blog/2014/09/29/r-filtering-data-frames-by-column-type-x-must-be-numeric/
+dfTrainClean <- dfTrainRaw[sapply(dfTrainRaw, function(x) !is.factor(x))]
+```
+
+And last but not least, put back in the classe column.
+```{r}
+dfTrainClean$classe <- dfTrainRaw$classe
+```
+
+One last check of the cleaned data.
+```{r, results='hide'}
+summary(dfTrainClean)
+```
+
+### Preprocess the Data
+
+I will create two set of data.  One to train my models on, the other to test the out of sample error and accuracy.  I have used a 60% - 40% split between training set and testing set.
+```{r}
+set.seed(123) # for reproducibility
+inTrain <- createDataPartition(dfTrainClean$classe, p=0.60, list=F)
+dfTrainData <- dfTrainClean[inTrain, ]
+dfTestData <- dfTrainClean[-inTrain, ]
+```
+
+### Build the Models
+
+To speed up the models building, I will use the doParallel package.  It achieves approximately a speedup factor of 2 using 4 cores on my laptop.
+```{r}
+library(doParallel)
+registerDoParallel(cores=4)
+```
+
+Now I train 5 different model types.  Random Forest (rf), Partial Least Square (pls), Classification Tree (rpart), Stochastic Gradient Boosting (gbm) and C5.0 (Decision Trees and Rule-Based Models).  I use 10 repeats of 10 fold cross validated models to reduce overfitting.
+```{r, results='hide'}
+set.seed(123) # for reproducibility
+rfFit <- train(classe ~ ., data=dfTrainData, method="rf",
+                 trControl=trainControl(method="cv", number=10, repeats=10, allowParallel=TRUE),
+                ntree=500)
+set.seed(123) # for reproducibility
+plsFit <- train(classe ~ ., data=dfTrainData, method="pls",
+                  trControl=trainControl(method="cv", number=10, repeats=10, allowParallel=TRUE))
+set.seed(123) # for reproducibility
+rpartFit <- train(classe ~ ., data=dfTrainData, method="rpart",
+                    trControl=trainControl(method="cv", number=10, repeats=10, allowParallel=TRUE))
+set.seed(123) # for reproducibility
+gbmFit <- train(classe ~ ., data=dfTrainData, method="gbm",
+                    trControl=trainControl(method="cv", number=10, repeats=10, allowParallel=TRUE))
+set.seed(123) # for reproducibility
+c50Fit <- train(classe ~ ., data=dfTrainData, method="C5.0",
+                    trControl=trainControl(method="cv", number=10, repeats=10, allowParallel=TRUE))
+```
+
+I take a graphical look at each models accuracy.
+```{r}
+predVals <- extractPrediction(list(rfFit, rpartFit, plsFit, gbmFit, c50Fit),
+                              testX = dfTestData[ , -53],
+                              testY = dfTestData$classe)
+plotObsVsPred(predVals)
+```
+
+```{r}
+resamps <- resamples(list(RF=rfFit, CART=rpartFit, PLS=plsFit, GBM=gbmFit, C50=c50Fit))
+bwplot(resamps)
+parallelplot(resamps)
+```
+
+### Generate the Confusion Matrix
+
+```{r}
+predictRF <- predict(rfFit, dfTestData)
+confusionMatrix(dfTestData$classe, predictRF)
+
+predictC50 <- predict(c50Fit, dfTestData)
+confusionMatrix(dfTestData$classe, predictC50)
+```
+
+### Calculate Accuracy and Out of Sample Error for Random Forest
+
+The Out of Sample Error Rate for the Random Forest model is 0.88%.
+
+```{r}
+accuracy <- postResample(predictRF, dfTestData$classe)
+accuracy
+
+outOfSampleError <- 1 - as.numeric(confusionMatrix(dfTestData$classe, predictRF)$overall[1])
+outOfSampleError
+```
+
+### Calculate Accuracy and Out of Sample Error for C5.0
+
+The Out of Sample Error Rate for the C5.0 model is 0.8%.
+
+```{r}
+accuracy <- postResample(predictC50, dfTestData$classe)
+accuracy
+
+outOfSampleError <- 1 - as.numeric(confusionMatrix(dfTestData$classe, predictC50)$overall[1])
+outOfSampleError
+```
+
+### Generate Submission Files with Raw Test Data
+
+```{r}
+rfPredicted <- predict(rfFit, dfTestRaw)
+rfPredicted
+
+c50Predicted <- predict(c50Fit, dfTestRaw)
+c50Predicted
+
+answers <- c50Predicted
+
+pml_write_files <- function(x) {
+    n = length(x)
+    for(i in 1:n){
+        filename = paste0("problemResults/problem_id_", i, ".txt")
+        write.table(x[i], file=filename, quote=FALSE, row.names=FALSE, col.names=FALSE)
+    }
+}
+
+pml_write_files(answers)
+```
